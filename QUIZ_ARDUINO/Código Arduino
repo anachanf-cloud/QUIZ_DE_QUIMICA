@@ -1,0 +1,130 @@
+int botaoA = 2;
+int botaoB = 3;
+int botaoC = 4;
+int botaoD = 5;
+
+int ledVerde = 8;
+int ledVermelho = 9;
+
+int pontuacao = 0; // contador de pontos
+
+// Perguntas
+String perguntas[] = {
+  "Qual é o maior planeta do Sistema Solar?",
+  "Quem foi o primeiro homem a pisar na Lua?",
+  "Em que ano ocorreu a Independencia do Brasil?",
+  "Qual é o elemento quimico representado pela sigla 'O'?",
+  "Qual é o maior pais em extensao territorial do mundo?",
+  "Quem pintou a obra 'Mona Lisa'?"
+};
+
+// Alternativas
+String alternativas[][4] = {
+  {"A) Terra", "B) Jupiter", "C) Marte", "D) Venus"},
+  {"A) Neil Armstrong", "B) Yuri Gagarin", "C) Buzz Aldrin", "D) Santos Dumont"},
+  {"A) 1500", "B) 1822", "C) 1889", "D) 1964"},
+  {"A) Ouro", "B) Oxigenio", "C) Osmio", "D) Osseo"},
+  {"A) Canada", "B) Estados Unidos", "C) Russia", "D) China"},
+  {"A) Pablo Picasso", "B) Leonardo da Vinci", "C) Michelangelo", "D) Van Gogh"}
+};
+
+// Respostas corretas
+char corretas[] = {'B', 'A', 'B', 'B', 'C', 'B'};
+
+int perguntaAtual = 0;
+int totalPerguntas = 6;
+
+void setup() {
+  Serial.begin(9600);
+  delay(1000);
+
+  pinMode(botaoA, INPUT_PULLUP);
+  pinMode(botaoB, INPUT_PULLUP);
+  pinMode(botaoC, INPUT_PULLUP);
+  pinMode(botaoD, INPUT_PULLUP);
+
+  pinMode(ledVerde, OUTPUT);
+  pinMode(ledVermelho, OUTPUT);
+
+  mostrarPergunta();
+}
+
+void loop() {
+  if (digitalRead(botaoA) == LOW) verificaResposta('A');
+  if (digitalRead(botaoB) == LOW) verificaResposta('B');
+  if (digitalRead(botaoC) == LOW) verificaResposta('C');
+  if (digitalRead(botaoD) == LOW) verificaResposta('D');
+}
+
+void mostrarPergunta() {
+  Serial.println();
+  Serial.print("Pergunta ");
+  Serial.print(perguntaAtual + 1);
+  Serial.print(": ");
+  Serial.println(perguntas[perguntaAtual]);
+
+  for (int i = 0; i < 4; i++) {
+    Serial.println(alternativas[perguntaAtual][i]);
+  }
+}
+
+void verificaResposta(char resposta) {
+  if (resposta == corretas[perguntaAtual]) {
+    digitalWrite(ledVerde, HIGH);
+    delay(2000);
+    digitalWrite(ledVerde, LOW);
+    Serial.println("✅ Correto!");
+    pontuacao++;
+  } else {
+    digitalWrite(ledVermelho, HIGH);
+    delay(2000);
+    digitalWrite(ledVermelho, LOW);
+    Serial.print("❌ Errado! Voce apertou: ");
+    Serial.println(resposta);
+  }
+
+  Serial.print("Pontuacao atual: ");
+  Serial.print(pontuacao);
+  Serial.print("/");
+  Serial.println(totalPerguntas);
+
+  delay(1000);
+
+  perguntaAtual++;
+  if (perguntaAtual < totalPerguntas) {
+    mostrarPergunta();
+  } else {
+    finalizarQuiz();
+  }
+}
+
+void finalizarQuiz() {
+  Serial.println();
+  Serial.print("🎉 Quiz finalizado! Sua pontuacao final: ");
+  Serial.print(pontuacao);
+  Serial.print("/");
+  Serial.println(totalPerguntas);
+  Serial.println("TENTAR NOVAMENTE? SIM OU NAO");
+
+  while (true) {
+    if (Serial.available() > 0) {
+      String resposta = Serial.readStringUntil('\n');
+      resposta.trim(); // remove espaços e enter
+      resposta.toUpperCase();
+
+      if (resposta == "SIM") {
+        // "limpar" Serial Monitor (simulado)
+        for (int i = 0; i < 50; i++) Serial.println();
+        pontuacao = 0;
+        perguntaAtual = 0;
+        mostrarPergunta();
+        break; // sai do while e reinicia loop
+      } else if (resposta == "NAO") {
+        Serial.println("Obrigado por jogar!");
+        while (true); // trava o programa
+      } else {
+        Serial.println("Digite SIM ou NAO");
+      }
+    }
+  }
+}
