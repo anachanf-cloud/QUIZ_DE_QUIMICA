@@ -3,11 +3,14 @@ import mediapipe as mp
 import pygame
 import time
 import os
+import numpy as np
 
 # === CONFIGURAÇÕES INICIAIS ===
 pygame.init()
-screen = pygame.display.set_mode((1280, 720))
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)  # Tela cheia
 pygame.display.set_caption("Quiz Química - Armadillos")
+
+SCREEN_W, SCREEN_H = screen.get_width(), screen.get_height()
 
 # Caminhos das imagens
 layers = {
@@ -29,20 +32,20 @@ layers = {
 }
 
 # Tempos para gestos
-TEMPO_CORRETO = 0.8  # segundos para reconhecer correto
-TEMPO_INCORRETO = 3  # segundos para reconhecer incorreto
+TEMPO_CORRETO = 0.8
+TEMPO_INCORRETO = 3
 
 # === FUNÇÃO PARA CARREGAR IMAGENS COM VERIFICAÇÃO ===
 def carregar_imagem(caminho):
     if not os.path.exists(caminho):
         print(f"[ERRO] Imagem não encontrada: {caminho}")
-        return pygame.Surface((1280, 720))
+        return pygame.Surface((SCREEN_W, SCREEN_H))
     try:
         img = pygame.image.load(caminho)
-        return pygame.transform.scale(img, (1280, 720))
+        return pygame.transform.scale(img, (SCREEN_W, SCREEN_H))
     except Exception as e:
         print(f"[ERRO] Falha ao carregar imagem {caminho}: {e}")
-        return pygame.Surface((1280, 720))
+        return pygame.Surface((SCREEN_W, SCREEN_H))
 
 # === DETECÇÃO DE MÃO ===
 mp_hands = mp.solutions.hands
@@ -73,17 +76,25 @@ hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
 # === ESTADOS ===
 estado = "START"
 mostrar_camera = False
-ultima_pergunta = None  # para saber de qual resposta veio CORRETO/INCORRETO
+ultima_pergunta = None
 tempo_inicio_correto = None
 tempo_inicio_incorreto = None
 
 def mudar_estado(novo):
     global estado, mostrar_camera, tempo_inicio_correto, tempo_inicio_incorreto, ultima_pergunta
     print(f"[DEBUG] Mudando estado: {estado} -> {novo}")
+    
     if "RESPOSTA" in novo:
         ultima_pergunta = novo
+    elif novo in ["CORRETO", "INCORRETO"]:
+        if ultima_pergunta is None:
+            for i in range(1,7):
+                if estado == f"RESPOSTA{i}":
+                    ultima_pergunta = f"RESPOSTA{i}"
+                    break
+
     estado = novo
-    mostrar_camera = "RESPOSTA" in novo
+    mostrar_camera = "RESPOSTA" in novo or novo in ["CORRETO", "INCORRETO"]
     tempo_inicio_correto = None
     tempo_inicio_incorreto = None
 
@@ -95,13 +106,11 @@ while rodando:
         if event.type == pygame.QUIT:
             rodando = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            print(f"[DEBUG] Clique detectado no estado: {estado}")
             if estado == "START":
                 mudar_estado("PERGUNTA1")
             elif estado.startswith("PERGUNTA"):
                 mudar_estado(estado.replace("PERGUNTA", "RESPOSTA"))
             elif estado in ["CORRETO", "INCORRETO"]:
-                # Avança conforme a última resposta
                 if ultima_pergunta:
                     prox_num = int(ultima_pergunta[-1]) + 1
                     if prox_num <= 6:
@@ -112,62 +121,68 @@ while rodando:
     # Captura da câmera
     ret, frame = camera.read()
     if not ret:
-        print("[DEBUG] Falha na captura da câmera!")
         continue
     frame = cv2.flip(frame, 1)
+
+    # Processamento de mão
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = hands.process(rgb)
 
-    # Detecção de dedos
     if mostrar_camera and results.multi_hand_landmarks:
         for hand_landmarks, hand_handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
             hand_label = hand_handedness.classification[0].label
             dedos = contar_dedos(hand_landmarks, hand_label)
+            
             print(f"[DEBUG] Mão detectada ({hand_label}) - Dedos: {dedos}")
 
-            # Dedos corretos por resposta
-            if estado == "RESPOSTA1":
-                certos = {2}
-            elif estado == "RESPOSTA2":
-                certos = {4}
-            elif estado == "RESPOSTA3":
-                certos = {3}
-            elif estado == "RESPOSTA4":
-                certos = {1}
-            elif estado == "RESPOSTA5":
-                certos = {3}
-            elif estado == "RESPOSTA6":
-                certos = {2}
-            else:
-                certos = set()
+            if estado == "RESPOSTA1": certos = {2}
+            elif estado == "RESPOSTA2": certos = {4}
+            elif estado == "RESPOSTA3": certos = {3}
+            elif estado == "RESPOSTA4": certos = {1}
+            elif estado == "RESPOSTA5": certos = {3}
+            elif estado == "RESPOSTA6": certos = {2}
+            else: certos = set()
 
-            # Lógica de tempos separados
             if dedos in certos:
                 tempo_inicio_correto = tempo_inicio_correto or time.time()
                 tempo_inicio_incorreto = None
                 if time.time() - tempo_inicio_correto >= TEMPO_CORRETO:
-                    print("[DEBUG] Gesto correto reconhecido")
                     mudar_estado("CORRETO")
             elif dedos not in certos and dedos > 0:
                 tempo_inicio_incorreto = tempo_inicio_incorreto or time.time()
                 tempo_inicio_correto = None
                 if time.time() - tempo_inicio_incorreto >= TEMPO_INCORRETO:
-                    print("[DEBUG] Gesto incorreto reconhecido")
                     mudar_estado("INCORRETO")
             else:
                 tempo_inicio_correto = None
                 tempo_inicio_incorreto = None
 
-    # Desenhar na tela
+    # Desenhar tela
     tela = carregar_imagem(layers[estado])
-    screen.blit(tela, (0, 0))
+    
+    if mostrar_camera:
+        tela_cv = pygame.surfarray.array3d(tela).swapaxes(0,1)
+        hsv = cv2.cvtColor(tela_cv, cv2.COLOR_RGB2HSV)
+        
+        azul_baixo = np.array([95, 150, 200])
+        azul_alto  = np.array([105, 255, 255])
+        mask_azul = cv2.inRange(hsv, azul_baixo, azul_alto)
+        mask_inv = cv2.bitwise_not(mask_azul)
 
-    if mostrar_camera and estado.startswith("RESPOSTA"):
-        cam_surf = pygame.image.frombuffer(frame.tobytes(), frame.shape[1::-1], "BGR")
-        cam_surf = pygame.transform.scale(cam_surf, (400, 300))
-        screen.blit(cam_surf, (440, 200))
+        cam_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        cam_rgb = cv2.resize(cam_rgb, (SCREEN_W, SCREEN_H))
+
+        fundo = cv2.bitwise_and(tela_cv, tela_cv, mask=mask_inv)
+        cam_sobre_azul = cv2.bitwise_and(cam_rgb, cam_rgb, mask=mask_azul)
+        resultado = cv2.add(fundo, cam_sobre_azul)
+
+        cam_surf = pygame.surfarray.make_surface(resultado.swapaxes(0,1))
+        screen.blit(cam_surf, (0,0))
+    else:
+        screen.blit(tela, (0,0))
 
     pygame.display.flip()
 
 camera.release()
 pygame.quit()
+
