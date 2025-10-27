@@ -1,0 +1,18 @@
+import serial
+import time
+import pyautogui
+
+arduino = serial.Serial("COM17", 9600)  # porta está ok se você já confirmou
+time.sleep(2)
+
+print("Conectado! Abra o PowerPoint em modo apresentação (F5).")
+
+while True:
+    if arduino.in_waiting > 0:
+        msg = arduino.readline().decode().strip()
+        print("Recebido:", msg)
+
+        if msg == "NEXT":
+            pyautogui.press("right")  # avança slide
+        elif msg == "RESET":
+            pyautogui.press("home")   # volta ao início
