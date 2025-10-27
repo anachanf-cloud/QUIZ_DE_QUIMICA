@@ -1,0 +1,223 @@
+import cv2
+import numpy as np
+import time
+import os
+import serial
+import io
+from PIL import Image
+
+# ---------- Caminhos ----------
+BASE_PATH = r"C:\Users\Aluno\Documents\SORRISO"
+SAVE_PATH = r"C:\Users\Aluno\Documents\SORRISO DETECTADO"
+os.makedirs(SAVE_PATH, exist_ok=True)
+
+# ---------- Serial com ESP_SMILE ----------
+# Ajuste a porta COM se necessário
+esp32_serial = serial.Serial("COM5", 115200, timeout=1)
+time.sleep(2)  # ESP reinicia ao abrir serial
+
+def compress_image(image_path, quality=40):
+    """Comprime a imagem reduzindo qualidade para envio."""
+    img = Image.open(image_path)
+    img = img.convert("RGB")
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
+
+def send_image(image_path):
+    """Envia a imagem comprimida para o ESP32 via USB Serial."""
+    if not os.path.exists(image_path):
+        print(f"[ERRO] Arquivo não encontrado: {image_path}")
+        return
+
+    img_bytes = compress_image(image_path, quality=40)
+    chunk_size = 1024
+
+    for i in range(0, len(img_bytes), chunk_size):
+        esp32_serial.write(img_bytes[i:i+chunk_size])
+        esp32_serial.flush()
+        time.sleep(0.01)
+
+    esp32_serial.write(b"EOF")
+    print(f"[INFO] Imagem enviada! ({len(img_bytes)} bytes)")
+
+# ---------- Imagens ----------
+IMAGES = {
+    "3025": "3025.jpg",
+    "egito": "EGITO.jpg",
+    "idade": "IDADEMEDIA.jpg",
+    "anos80": "ANOS80.jpg",
+    "2025": "2025.jpg",
+}
+LAYERS = {
+    "1": "layer 1.jpg",
+    "verm": "layer verm.jpg",
+    "laran": "layer laran.jpg",
+    "ama": "layer ama.jpg",
+    "verd": "layer verd.jpg",
+}
+
+screen_width = 1280
+screen_height = 720
+DETECT_WIDTH, DETECT_HEIGHT = 320, 240
+
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_smile.xml")
+
+def load_and_resize(path, w=screen_width, h=screen_height):
+    img = cv2.imread(path)
+    if img is None:
+        print(f"[ERRO] Não encontrou: {path}")
+        return None
+    return cv2.resize(img, (w, h))
+
+def preprocess_layer(path):
+    overlay = load_and_resize(path)
+    hsv = cv2.cvtColor(overlay, cv2.COLOR_BGR2HSV)
+    lower_blue = np.array([110, 80, 80])
+    upper_blue = np.array([130, 255, 255])
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    return overlay, mask
+
+IMAGES = {k: load_and_resize(os.path.join(BASE_PATH, v)) for k, v in IMAGES.items()}
+LAYERS = {k: preprocess_layer(os.path.join(BASE_PATH, v)) for k, v in LAYERS.items()}
+
+# ---------- Funções ----------
+def check_esc(cap):
+    if cv2.waitKey(1) & 0xFF == 27:
+        cap.release()
+        cv2.destroyAllWindows()
+        esp32_serial.close()
+        exit()
+
+def show_image(img, duration):
+    if img is None: return
+    start = time.time()
+    while time.time() - start < duration:
+        cv2.imshow("Smile Detection", img)
+        check_esc(cap)
+
+screenshot_counter = 1
+
+def run_camera_with_layer(cap, layer, mask, require_smile=False, switch_to=None, hold_time=2, last_stage=False):
+    global screenshot_counter
+
+    smile_detected = False
+    smile_start = None
+    SMILE_DURATION = 1
+    frame_count = 0
+
+    start_time_last_stage = time.time() if last_stage else None
+    MAX_WAIT_LAST = 3
+    last_composed = None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        cam_resized = cv2.resize(frame, (screen_width, screen_height))
+        composed = layer.copy()
+        composed[mask == 255] = cam_resized[mask == 255]
+        last_composed = composed.copy()
+
+        gray_small = cv2.cvtColor(cv2.resize(frame, (DETECT_WIDTH, DETECT_HEIGHT)), cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray_small, 1.3, 5)
+        scale_x = screen_width / DETECT_WIDTH
+        scale_y = screen_height / DETECT_HEIGHT
+
+        for (x, y, w, h) in faces:
+            x = int(x * scale_x)
+            y = int(y * scale_y)
+            w = int(w * scale_x)
+            h = int(h * scale_y)
+
+            roi_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[y:y + h, x:x + w]
+
+            if last_stage:
+                smiles = smile_cascade.detectMultiScale(roi_gray, scaleFactor=1.3, minNeighbors=10, minSize=(20, 20))
+            else:
+                smiles = smile_cascade.detectMultiScale(roi_gray, scaleFactor=1.7, minNeighbors=20)
+
+            margin = 30
+            x1 = max(x - margin, 0)
+            y1 = max(y - margin, 0)
+            x2 = min(x + w + margin, screen_width)
+            y2 = min(y + h + margin, screen_height)
+
+            color = (0, 255, 0)
+            if require_smile and len(smiles) > 0:
+                color = (0, 255, 255)
+                if smile_start is None:
+                    smile_start = time.time()
+                elif time.time() - smile_start >= SMILE_DURATION:
+                    smile_detected = True
+                    break
+            else:
+                smile_start = None
+
+            cv2.rectangle(composed, (x1, y1), (x2, y2), color, 3)
+
+        frame_count += 1
+        cv2.imshow("Smile Detection", composed)
+        check_esc(cap)
+
+        if last_stage and (time.time() - start_time_last_stage > MAX_WAIT_LAST):
+            print("[PREVENÇÃO] Tempo excedido no último estágio, mudando de layer.")
+            smile_detected = True
+
+        if smile_detected and switch_to:
+            # >>> ENVIA CONFIRMAÇÃO PARA O ESP_SMILE <<<
+            esp32_serial.write(b"RECONHECIDO\n")
+            esp32_serial.flush()
+            print("[INFO] Sorriso reconhecido! Enviado para ESP_SMILE.")
+
+            switch_layer, switch_mask = switch_to
+            screenshot_taken = False
+            start = time.time()
+            while time.time() - start < hold_time or last_stage:
+                ret, frame = cap.read()
+                if not ret: break
+                cam_resized = cv2.resize(frame, (screen_width, screen_height))
+                comp_sw = switch_layer.copy()
+                comp_sw[switch_mask == 255] = cam_resized[switch_mask == 255]
+
+                cv2.imshow("Smile Detection", comp_sw)
+                check_esc(cap)
+
+                # Screenshot + envio
+                if not screenshot_taken:
+                    save_file = os.path.join(SAVE_PATH, f"sorriso_{screenshot_counter}.jpg")
+                    cv2.imwrite(save_file, comp_sw)
+                    print(f"[INFO] Screenshot salvo em: {save_file}")
+                    send_image(save_file)  # <<< ENVIA IMAGEM
+                    screenshot_counter += 1
+                    screenshot_taken = True
+            return
+
+# ---------- MAIN ----------
+cv2.namedWindow("Smile Detection", cv2.WINDOW_NORMAL)
+cv2.setWindowProperty("Smile Detection", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, screen_width)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, screen_height)
+
+show_image(IMAGES["3025"], 2)
+show_image(IMAGES["egito"], 2)
+
+run_camera_with_layer(cap, *LAYERS["1"], require_smile=True, switch_to=LAYERS["verm"], hold_time=22)
+show_image(IMAGES["idade"], 2)
+
+run_camera_with_layer(cap, *LAYERS["verm"], require_smile=True, switch_to=LAYERS["laran"], hold_time=15)
+show_image(IMAGES["anos80"], 2)
+
+run_camera_with_layer(cap, *LAYERS["laran"], require_smile=True, switch_to=LAYERS["ama"], hold_time=2)
+show_image(IMAGES["2025"], 5)
+
+run_camera_with_layer(cap, *LAYERS["ama"], require_smile=True, switch_to=LAYERS["verd"], hold_time=0, last_stage=True)
+
+print("[INFO] Apresentação concluída (ESC para sair).")
+cap.release()
+cv2.destroyAllWindows()
+esp32_serial.close()
